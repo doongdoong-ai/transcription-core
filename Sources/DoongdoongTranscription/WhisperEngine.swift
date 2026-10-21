@@ -4,13 +4,19 @@ import Darwin
 private final class ChildProcess: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
-    func install(_ value: Process) { lock.lock(); defer { lock.unlock() }; process = value }
+    private var lifetime: FileHandle?
+    func install(_ value: Process, lifetime: FileHandle) {
+        lock.lock(); defer { lock.unlock() }; process = value; self.lifetime = lifetime
+    }
     func stop() {
         lock.lock(); defer { lock.unlock() }
+        try? lifetime?.close(); lifetime = nil
         if let process, process.isRunning {
             // Only the private child owned by this engine. No useful state lives
             // in the server; completed results are committed by the session.
-            kill(process.processIdentifier, SIGKILL)
+            let pid = process.processIdentifier
+            if getpgid(pid) == pid { kill(-pid, SIGKILL) }
+            else { process.terminate() } // allow the supervisor trap to stop its worker
             process.waitUntilExit()
         }
         process = nil
@@ -113,18 +119,22 @@ public actor WhisperEngine: SpeechRecognizer {
         let route = "/" + UUID().uuidString.lowercased()
         let endpoint = URL(string: "http://127.0.0.1:\(port)\(route)")!
         let process = Process()
-        process.executableURL = config.executable
-        process.arguments = ["--host", "127.0.0.1", "--port", String(port), "--request-path", route,
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = EngineLifetime.arguments(executable: config.executable, arguments: ["--host", "127.0.0.1", "--port", String(port), "--request-path", route,
                              "--public", root.path, "-m", config.model.path, "-l", config.language,
                              "-t", "4", "-p", "1", "-bs", "5", "-bo", "5", "-sns", "-nlp",
-                             "--vad", "-vm", config.vadModel.path, "-vspd", "100", "-vp", "200"]
+                             "--vad", "-vm", config.vadModel.path, "-vspd", "100", "-vp", "200"])
         process.currentDirectoryURL = root
         // Never inherit API keys, account tokens or proxy configuration.
         process.environment = ["PATH": "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin", "LANG": "en_US.UTF-8"]
-        process.standardInput = FileHandle.nullDevice
+        let lifetime = Pipe()
+        process.standardInput = lifetime.fileHandleForReading
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try process.run(); child.install(process)
+        do { try process.run() }
+        catch { try? lifetime.fileHandleForReading.close(); try? lifetime.fileHandleForWriting.close(); throw error }
+        try? lifetime.fileHandleForReading.close()
+        child.install(process, lifetime: lifetime.fileHandleForWriting)
         self.process = process
         let deadline = ContinuousClock.now.advanced(by: .seconds(120))
         while ContinuousClock.now < deadline {

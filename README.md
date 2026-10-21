@@ -34,12 +34,14 @@ swift test
 
 ## Swift에서 사용하기
 
-Swift Package Manager 의존성에 `doongdoong-ai/transcription-core`의 `0.1.0`을 추가하고 `DoongdoongTranscription` 제품을 연결합니다.
+Swift Package Manager 의존성에 `doongdoong-ai/transcription-core`의 `0.1.2`를 추가하고 `DoongdoongTranscription` 제품을 연결합니다.
 
 ```swift
 import DoongdoongTranscription
 
 let engine = WhisperEngine() // 앱에서 공유: 녹음마다 만들지 않습니다.
+// 첫 ASR 호출 전 강제 종료도 복구할 수 있도록, 녹음기를 열기 전에 호출합니다.
+try TranscriptionSession.prepareRecording(directory: workDirectory)
 let configuration = WhisperConfiguration(
     executable: serverURL, model: modelURL, vadModel: vadURL,
     language: "ko", chunkSeconds: 60
@@ -61,7 +63,7 @@ await engine.unload()
 
 정상 녹음 종료 시 진행 중인 추론을 취소하지 않으면 모델과 처리 결과를 그대로 재사용할 수 있습니다. 작업 자체를 취소하면 실행 중인 엔진 프로세스를 종료하고 다음 요청에서 다시 로딩합니다. 여러 세션을 공유할 때 대기 중인 취소는 자신의 차례에 반영됩니다.
 
-앱이 비정상 종료되어 WAV 헤더가 미완성이라면 `TranscriptionSession.recoverInterrupted(audio:directory:)`로 별도 복구 파일을 만들 수 있습니다. 이 코어의 녹음 표식이 있는 파일만 복구하며 원본은 덮어쓰지 않습니다.
+앱이 비정상 종료되어 WAV 헤더가 미완성이라면 `TranscriptionSession.recoverInterrupted(audio:directory:)`로 별도 `audio-local-recovered.wav`를 만들 수 있습니다. `prepareRecording`으로 표식을 남긴 파일만 복구하며 원본은 덮어쓰지 않습니다. 복구도 전사와 같은 파일 잠금을 사용합니다. 디스크에 남은 완전한 PCM 샘플만 포함하고, 기존 복구 파일의 내용이 다르면 덮어쓰지 않습니다. 복구 후에도 같은 PCM의 체크포인트를 재사용합니다.
 
 ## CLI
 
@@ -78,6 +80,6 @@ swift run doongdoong-transcribe audio.wav ./result \
 
 M1·8GB에서 Turbo 모델에 8초 음성을 두 번 요청하여 동일 PID·모델 로딩 1회를 확인했습니다. 전체 73분 강의의 실시간 처리·발열·배터리·품질 회귀 검증을 대신하는 결과는 아닙니다. 짧은 구간 경계의 단어 손실, VAD 오검출, Whisper의 반복·환각은 여전히 평가해야 합니다. 입력을 겹쳐 반복 전사하지 않으므로 실시간 자막 수정 기능은 제공하지 않습니다.
 
-이 패키지는 whisper.cpp의 Swift 프로세스 어댑터와 증분 전사 세션입니다. 음성 인식 모델을 자체 개발한 프로젝트는 아닙니다. 앱이 비정상 강제 종료되면 자식 엔진이 남을 수 있어 정상 종료 시 `unload()`를 호출해야 합니다.
+이 패키지는 whisper.cpp의 Swift 프로세스 어댑터와 증분 전사 세션입니다. 음성 인식 모델을 자체 개발한 프로젝트는 아닙니다. 엔진 감독 프로세스는 소유 앱의 파이프가 닫히면 상주 엔진을 종료합니다. Swift 종료 정리가 실행되지 않는 강제 종료에도 적용됩니다. 정상 종료와 잠자기 준비에서는 진행 중 요청을 취소하고 `unload()`를 호출하세요. 잠자기·마이크 중지·이어하기 UI는 호출 앱의 책임입니다. 아직 디스크에 쓰이지 않은 음성은 복구할 수 없습니다.
 
 MIT 라이선스. 외부 엔진과 모델의 출처·라이선스는 [구성요소 안내](THIRD_PARTY.md)에 정리했습니다.
