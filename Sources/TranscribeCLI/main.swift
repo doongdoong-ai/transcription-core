@@ -1,28 +1,26 @@
 import Foundation
 import DoongdoongTranscription
 
-@main struct TranscribeCLI {
+@main struct Transcribe {
     static func main() async {
+        do { try await run() }
+        catch { FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(1) }
+    }
+    static func run() async throws {
         let args = Array(CommandLine.arguments.dropFirst())
-        guard args.count == 5 || args.count == 6 else {
-            print("Usage: doongdoong-transcribe <16k-mono.wav> <output-directory> <whisper-server> <model.bin> <vad.bin> [language]")
+        guard (6...7).contains(args.count) else {
+            print("Usage: doongdoong-transcribe AUDIO.wav OUTPUT_DIRECTORY CODEX FFMPEG PYTHON ALIGNMENT_MODELS [LANGUAGE]")
             exit(2)
         }
-        let engine = WhisperEngine()
-        do {
-            let config = WhisperConfiguration(executable: URL(fileURLWithPath: args[2]), model: URL(fileURLWithPath: args[3]),
-                                              vadModel: URL(fileURLWithPath: args[4]), language: args.count == 6 ? args[5] : "ko")
-            let output = URL(fileURLWithPath: args[1], isDirectory: true)
-            let session = TranscriptionSession(audio: URL(fileURLWithPath: args[0]), directory: output, configuration: config, recognizer: engine)
-            let segments = try await session.processAvailable(final: true)
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(segments).write(to: output.appendingPathComponent("transcript.json"), options: .atomic)
-            print("\(segments.count) segments → \(output.appendingPathComponent("transcript.json").path)")
-            await engine.unload()
-        } catch {
-            await engine.unload()
-            FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
-            exit(1)
+        let output = URL(fileURLWithPath: args[1], isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let config = TranscriptionConfiguration(codex: URL(fileURLWithPath: args[2]), ffmpeg: URL(fileURLWithPath: args[3]),
+            python: URL(fileURLWithPath: args[4]), alignmentModelDirectory: URL(fileURLWithPath: args[5]), language: args.count > 6 ? args[6] : "ko")
+        let session = TranscriptionSession(audio: URL(fileURLWithPath: args[0]), directory: output,
+            configuration: config, recognizer: ChatGPTSpeechRecognizer.shared)
+        let result = try await session.processAvailable(final: true) { value in
+            print("Processed \(Int(value.processedSeconds))/\(Int(value.totalSeconds)) seconds")
         }
+        try JSONEncoder().encode(result).write(to: output.appendingPathComponent("segments.json"), options: .atomic)
     }
 }
