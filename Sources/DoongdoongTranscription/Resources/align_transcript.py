@@ -308,6 +308,21 @@ def align(args):
             "uncertainSegments": sum(s["timingQuality"] != "aligned" for s in segments)}
 
 
+def watch_parent():
+    """Stop model work if the owning app dies without running its cancellation handler."""
+    import threading
+    import time
+    owner = os.getppid()
+    if owner <= 1:
+        os._exit(70)
+    def monitor():
+        while True:
+            time.sleep(0.25)
+            if os.getppid() != owner:
+                os._exit(70)
+    threading.Thread(target=monitor, daemon=True).start()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--audio", required=True)
@@ -318,7 +333,10 @@ def main():
     parser.add_argument("--cache-directory")
     parser.add_argument("--regions", action="store_true")
     parser.add_argument("--device", choices=["cpu", "mps"], default="cpu")
+    parser.add_argument("--watch-parent", action="store_true")
     args = parser.parse_args()
+    if args.watch_parent:
+        watch_parent()
     temporary = None
     try:
         result = align(args)

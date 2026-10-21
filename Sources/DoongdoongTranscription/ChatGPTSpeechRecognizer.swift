@@ -56,7 +56,7 @@ public actor ChatGPTSpeechRecognizer: SpeechRecognizer {
         let temporary = workspace.appendingPathComponent("alignment.pending.json")
         defer { try? FileManager.default.removeItem(at: temporary) }
         try await MediaProcessRunner().run(executable: configuration.python,
-            arguments: [SpeechAlignment.helper.path, "--audio", audio.path, "--transcript", rawURL.path,
+            arguments: [SpeechAlignment.helper.path, "--watch-parent", "--audio", audio.path, "--transcript", rawURL.path,
                         "--output", temporary.path, "--model-directory", configuration.alignmentModelDirectory.path,
                         "--language", configuration.language, "--cache-directory", workspace.appendingPathComponent("acoustic-cache").path],
             directory: workspace, log: workspace.appendingPathComponent("alignment.log"), timeout: max(300, duration * 6))

@@ -219,7 +219,7 @@ final class DictationAccountClient: NSObject {
 
     private static func serverError(_ error: [String: Any]) -> Error {
         guard var message = error["message"] as? String, !message.isEmpty else {
-            return ClientError.message("Codex에서 AI 연결를 완료하지 못했습니다.")
+            return ClientError.message("Codex에서 AI 연결을 완료하지 못했습니다.")
         }
         // Remote diagnostics may contain request details. Never surface bearer tokens or keys.
         for pattern in ["(?i)Bearer\\s+[^\\s\\\"']+", "\\bsk-[A-Za-z0-9_-]+", "\\beyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"] {
@@ -254,11 +254,11 @@ private enum ClientError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .disconnected: return "AI 연결 연결이 종료되었습니다. 다시 시도해 주세요."
-        case .timedOut: return "AI 연결 연결의 응답 시간이 초과되었습니다."
+        case .disconnected: return "AI 연결이 종료되었습니다. 다시 시도해 주세요."
+        case .timedOut: return "AI 연결의 응답 시간이 초과되었습니다."
         case .invalidMessage: return "AI 연결 프로그램에서 올바르지 않은 응답을 받았습니다."
         case .messageTooLarge: return "AI 연결 응답이 허용된 크기를 초과했습니다."
-        case .unexpectedAction: return "계정 조회 이외의 작업이 요청되어 AI 연결를 중단했습니다."
+        case .unexpectedAction: return "계정 조회 이외의 작업이 요청되어 AI 연결을 중단했습니다."
         case .message(let message): return message
         }
     }

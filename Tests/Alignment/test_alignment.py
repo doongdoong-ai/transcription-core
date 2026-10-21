@@ -9,6 +9,28 @@ spec.loader.exec_module(alignment)
 
 
 class AlignmentTests(unittest.TestCase):
+    def test_alignment_worker_stops_after_owning_process_exits(self):
+        import subprocess
+        import sys
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            ready = Path(directory) / 'ready'
+            worker = (
+                "import importlib.util,time,pathlib; "
+                f"s=importlib.util.spec_from_file_location('alignment',{str(path)!r}); "
+                "m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.watch_parent(); "
+                f"pathlib.Path({str(ready)!r}).touch(); time.sleep(60)"
+            )
+            supervisor = (
+                "import subprocess,sys,time,pathlib\n"
+                f"subprocess.Popen([sys.executable,'-c',{worker!r}])\n"
+                f"while not pathlib.Path({str(ready)!r}).exists(): time.sleep(0.01)\n"
+            )
+            # The child inherits stdout. EOF arrives only when both supervisor and worker exit.
+            result = subprocess.run([sys.executable, '-c', supervisor], capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue(ready.exists())
+
     def test_no_text_is_lost_when_splitting_long_or_unspaced_transcript(self):
         for text in ['첫 문장. 다음 문장!', '말' * 201, '반복 반복\n반복\t반복', '수출은 100억, 수입은 20억입니다.']:
             result = alignment.sentences(text, limit=20)

@@ -90,13 +90,4 @@ final class MediaProcessRunner: @unchecked Sendable {
         } onCancel: { self.cancel() }
     }
 
-    private static func tail(of log: URL) -> String {
-        guard let handle = try? FileHandle(forReadingFrom: log) else { return "" }
-        defer { try? handle.close() }
-        do {
-            let size = try handle.seekToEnd()
-            try handle.seek(toOffset: size > 8192 ? size - 8192 : 0)
-            return String(decoding: try handle.readToEnd() ?? Data(), as: UTF8.self)
-        } catch { return "" }
-    }
 }
