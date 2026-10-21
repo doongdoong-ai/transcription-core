@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+.local/
+.DS_Store
+*.wav
+*.bin
+*.log
+auth.json
+.env*
