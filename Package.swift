@@ -9,9 +9,9 @@ let package = Package(
         .executable(name: "doongdoong-transcribe", targets: ["TranscribeCLI"])
     ],
     targets: [
-        .target(name: "DoongdoongTranscription"),
+        .target(name: "DoongdoongTranscription", resources: [.copy("Resources")]),
         .executableTarget(name: "TranscribeCLI", dependencies: ["DoongdoongTranscription"]),
         .testTarget(name: "DoongdoongTranscriptionTests", dependencies: ["DoongdoongTranscription"])
     ],
-    swiftLanguageModes: [.v6]
+    swiftLanguageModes: [.v5]
 )

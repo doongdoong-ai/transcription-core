@@ -7,3 +7,7 @@
 *.log
 auth.json
 .env*
+
+__pycache__/
+*.pyc
+*.pt

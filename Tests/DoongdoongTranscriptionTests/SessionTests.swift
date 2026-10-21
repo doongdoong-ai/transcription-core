@@ -6,7 +6,7 @@ private actor Recognizer: SpeechRecognizer {
     var calls = 0
     var failAt: Int?
     init(failAt: Int? = nil) { self.failAt = failAt }
-    func transcribe(wave: Data, configuration: WhisperConfiguration) async throws -> [SpeechSegment] {
+    func transcribe(wave: Data, configuration: TranscriptionConfiguration, workspace: URL) async throws -> [SpeechSegment] {
         calls += 1
         if calls == failAt { throw TranscriptionError.server("fixture") }
         let duration = Double(wave.count - 44) / 32000
@@ -83,13 +83,15 @@ final class SessionTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(resumed.map(\.completedChunks), [1, 2, 3])
         XCTAssertEqual(resumed.last?.fraction, 1)
     }
-    func fixture(seconds: Double) throws -> (URL, URL, WhisperConfiguration) {
+    func fixture(seconds: Double) throws -> (URL, URL, TranscriptionConfiguration) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let model = root.appendingPathComponent("model.bin"); try Data([1]).write(to: model)
+        let model = root.appendingPathComponent("hub/checkpoints/model.pt")
+        try FileManager.default.createDirectory(at: model.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([1]).write(to: model)
         let audio = root.appendingPathComponent("audio.wav")
         try PCMFile.wave(samples(seconds)).write(to: audio)
-        return (root, audio, WhisperConfiguration(executable: URL(fileURLWithPath: "/usr/bin/true"), model: model, vadModel: model, chunkSeconds: 2))
+        return (root, audio, TranscriptionConfiguration(codex: URL(fileURLWithPath: "/usr/bin/true"), ffmpeg: URL(fileURLWithPath: "/usr/bin/true"), python: URL(fileURLWithPath: "/usr/bin/true"), alignmentModelDirectory: root, chunkSeconds: 2))
     }
     func samples(_ seconds: Double) -> Data {
         var result = Data()
@@ -154,7 +156,7 @@ final class SessionTests: XCTestCase, @unchecked Sendable {
         defer { try? FileManager.default.removeItem(at: root) }
         let backend = Recognizer()
         _ = try await TranscriptionSession(audio: audio, directory: root, configuration: config, recognizer: backend).processAvailable(final: true)
-        let other = WhisperConfiguration(executable: config.executable, model: config.model, vadModel: config.vadModel, language: "en", chunkSeconds: 2)
+        let other = TranscriptionConfiguration(codex: config.codex, ffmpeg: config.ffmpeg, python: config.python, alignmentModelDirectory: config.alignmentModelDirectory, language: "en", chunkSeconds: 2)
         _ = try await TranscriptionSession(audio: audio, directory: root, configuration: other, recognizer: backend).processAvailable(final: true)
         let calls = await backend.calls; XCTAssertEqual(calls, 2)
     }
