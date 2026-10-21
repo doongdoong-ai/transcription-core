@@ -1,76 +1,85 @@
 # Doongdoong Transcription
 
-**녹음 중인 WAV를 5분씩 파일로 전사하고, 문장별 재생 위치와 재개 기록을 반환하는 Swift 패키지입니다.** 둥둥이의 녹음 UI·텍스트 교정·제목·요약과 독립적으로 사용할 수 있습니다.
+**모델을 메모리에 유지하고, 녹음 중 새로 쌓인 음성을 순차 전사하는 Swift 패키지.**
+
+둥둥이에서 전사만 분리한 코어입니다. 입력은 녹음 중이거나 완성된 WAV, 출력은 원문과 문장별 타임스탬프입니다. 교정·제목·요약, UI, 계정 로그인은 포함하지 않습니다. Codex·Claude·API 키·구독 없이 실행합니다.
+
+## 처리 방식
 
 ```text
-16 kHz mono PCM16 WAV
-    → 완료된 구간을 최대 5분씩 AAC 파일로 변환
-    → ChatGPT 받아쓰기 서버에서 원문 수신
-    → Mac의 MMS_FA + CTC 정렬로 문장 시간 계산
-    → 구간 체크포인트 저장 → 다음 구간
+계속 저장되는 WAV
+    → 약 60초의 미처리 구간 (끝부분의 쉼을 우선)
+    → 메모리에 유지한 Whisper + 음성 감지
+    → 원문 · 시작/종료 시간 · 처리 기록
+녹음 종료 → 마지막 남은 구간 → 하나의 전사문
 ```
 
-Codex CLI는 ChatGPT 로그인만 제공합니다. 음성 인식을 위해 모델 턴이나 에이전트 도구를 호출하지 않습니다. 내부 `https://chatgpt.com/backend-api/transcribe`에 직접 파일을 전송하며, 음성 인식 모델은 클라이언트에서 지정하지 않습니다. 공개 음성 API와는 다른 경로로, 계정별 한도·과금·장기 지원은 확인되지 않았습니다. API 키 결제로 자동 전환하지 않습니다.
+`WhisperEngine` 하나를 여러 세션이 공유합니다. 첫 요청에서 `whisper-server`를 실행하고 모델을 올린 뒤 다음 요청부터 재사용합니다. HTTP는 Mac 내부 `127.0.0.1`에서만 사용하며 클라우드에 음성을 보내지 않습니다. 작업은 FIFO로 직렬 처리하므로 모델 여러 개가 동시에 메모리를 차지하지 않습니다.
 
-## 설치
+`TranscriptionSession`은 이미 처리한 PCM을 다시 인식하지 않습니다. 완료한 구간을 원자적으로 저장하고 재시도 시 PCM SHA-256과 설정을 검증합니다. 언어·모델 파일의 식별 정보·분할 설정이 바뀌면 별도 캐시를 사용합니다. 같은 녹음의 중복 실행은 파일 잠금으로 막습니다. 모델 파일은 실행 중 수정하지 마세요.
 
-macOS 14+, Swift 6, Codex CLI의 ChatGPT 로그인이 필요합니다. Apple M1·8 GB에서 확인했으며 Linux·Docker를 지원한다고 가정하지 마세요.
+Silero VAD로 발화 구간을 감지하며 디지털 무음은 디코더에 전달하지 않습니다. 녹음의 끝이 짧아도 마지막 구간을 버리지 않습니다. 반환 시간은 Whisper의 세그먼트 타임스탬프이며 단어 단위 강제 정렬이나 정확도 보증은 아닙니다.
+
+## 준비
+
+macOS 14 이상, Swift 6, whisper.cpp 1.9.5에서 검증했습니다. 현재 패키지는 macOS용이며 Linux·Docker 지원은 아직 없습니다. 기본 모델은 `large-v3-turbo` FP16, VAD는 Silero 6.2.0입니다.
 
 ```sh
-brew install python@3.13 ffmpeg
+brew install whisper.cpp
 ./scripts/setup-models.sh
-swift build -c release
+swift test
 ```
 
-Python 가상환경과 정렬 모델의 기본 위치는 `~/Library/Application Support/Doongdoong/Alignment`입니다. 모델은 SHA-256을 확인해 재사용합니다. **MMS_FA 가중치는 CC BY-NC 4.0**이며 이 저장소 코드의 MIT 라이선스와 다릅니다. 정렬 모델은 텍스트를 생성하지 않고 주어진 문장과 음성을 맞춥니다. 자세한 출처·라이선스는 [THIRD_PARTY.md](THIRD_PARTY.md)에 있습니다.
+모델은 처음 한 번 별도로 받으며 저장소와 패키지에 포함하지 않습니다. 설치 스크립트는 SHA-256을 확인하고 기존 모델을 재사용합니다. 설치 후 전사에는 인터넷이 필요 없습니다.
 
 ## Swift에서 사용하기
+
+Swift Package Manager 의존성에 `doongdoong-ai/transcription-core`의 `0.1.2`를 추가하고 `DoongdoongTranscription` 제품을 연결합니다.
 
 ```swift
 import DoongdoongTranscription
 
-let home = FileManager.default.homeDirectoryForCurrentUser
-let alignment = home.appendingPathComponent("Library/Application Support/Doongdoong/Alignment")
-let configuration = TranscriptionConfiguration(
-    codex: URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
-    ffmpeg: URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg"),
-    python: alignment.appendingPathComponent("venv/bin/python"),
-    alignmentModelDirectory: alignment.appendingPathComponent("models"),
-    language: "ko"
+let engine = WhisperEngine() // 앱에서 공유: 녹음마다 만들지 않습니다.
+// 첫 ASR 호출 전 강제 종료도 복구할 수 있도록, 녹음기를 열기 전에 호출합니다.
+try TranscriptionSession.prepareRecording(directory: workDirectory)
+let configuration = WhisperConfiguration(
+    executable: serverURL, model: modelURL, vadModel: vadURL,
+    language: "ko", chunkSeconds: 60
 )
-let session = TranscriptionSession(audio: audioURL, directory: jobDirectory,
-    configuration: configuration, recognizer: ChatGPTSpeechRecognizer.shared)
-try TranscriptionSession.prepareRecording(directory: jobDirectory) // 녹음기 시작 전에
-try await session.processAvailable(final: false) // 녹음 중 주기적으로 호출
-let segments = try await session.processAvailable(final: true) { progress in
-    print(progress.phase, progress.processedSeconds, progress.totalSeconds)
-} // WAV를 닫은 뒤 마지막 잔여 구간 처리
+let session = TranscriptionSession(
+    audio: recordingURL, directory: workDirectory,
+    configuration: configuration, recognizer: engine
+)
+
+// WAV를 계속 기록하는 동안 주기적으로, 이전 호출이 끝난 뒤 호출합니다.
+let partial = try await session.processAvailable(final: false)
+// 녹음기를 닫고 진행 중인 호출을 기다린 뒤:
+let complete = try await session.processAvailable(final: true)
+// 더 이상 사용할 때가 없거나 앱을 종료할 때:
+await engine.unload()
 ```
 
-진행률은 받아쓰기와 정렬을 모두 마쳐 커밋된 음성 길이입니다. `phase`는 현재 구간의 인식·정렬을 구분합니다. 약 5분 경계의 마지막 5초에서 쉼을 찾으며 구간을 중복 전송하지 않습니다. 완전한 디지털 무음은 서버에 보내지 않습니다. 각 세그먼트의 `timingQuality`는 `aligned` 또는 `approximate`이며 불확실한 위치를 정확한 따라읽기로 표시하면 안 됩니다.
+입력은 **16 kHz·모노·16비트 little-endian PCM WAV**, 최대 4시간입니다. 입력 형식 변환과 마이크 녹음은 호출 앱이 맡습니다. 세션 호출은 겹치지 않아야 합니다. 오류가 나도 녹음기를 중단하지 말고, 같은 세션이나 같은 작업 폴더로 재시도하세요.
 
-앱 번들을 직접 패키징할 때는 SwiftPM의 `DoongdoongTranscription_DoongdoongTranscription.bundle`을 앱의 `Contents/Resources`에 포함하세요.
+정상 녹음 종료 시 진행 중인 추론을 취소하지 않으면 모델과 처리 결과를 그대로 재사용할 수 있습니다. 작업 자체를 취소하면 실행 중인 엔진 프로세스를 종료하고 다음 요청에서 다시 로딩합니다. 여러 세션을 공유할 때 대기 중인 취소는 자신의 차례에 반영됩니다.
 
-## 실패와 재개
+앱이 비정상 종료되어 WAV 헤더가 미완성이라면 `TranscriptionSession.recoverInterrupted(audio:directory:)`로 별도 `audio-local-recovered.wav`를 만들 수 있습니다. `prepareRecording`으로 표식을 남긴 파일만 복구하며 원본은 덮어쓰지 않습니다. 복구도 전사와 같은 파일 잠금을 사용합니다. 디스크에 남은 완전한 PCM 샘플만 포함하고, 기존 복구 파일의 내용이 다르면 덮어쓰지 않습니다. 복구 후에도 같은 PCM의 체크포인트를 재사용합니다.
 
-구간별 원문은 정렬보다 먼저 원자적으로 저장합니다. 정렬이 실패하거나 취소되면 같은 PCM·언어의 응답을 재사용하며, 정렬 완료 후에만 전체 세션 커서를 옮깁니다. 원문·정렬·완료 체크포인트는 `transcription/`에 저장합니다. 실행 도구·정렬 모델·설정의 식별 정보와 PCM 해시를 검증하며, 같은 녹음의 중복 처리는 파일 잠금으로 막습니다.
-
-401은 토큰을 갱신해 한 번 재시도합니다. 그 외 네트워크·인증·빈 응답·429·정렬 실패는 호출자에게 반환합니다. UI와 재시도 정책은 호출 앱이 소유합니다. 공유 recognizer는 구간 처리를 직렬화해 정렬 모델이 동시에 여러 개 로드되지 않게 합니다. 취소 시 HTTP와 자식 프로세스를 중단하며, 정렬 helper는 소유 앱의 비정상 종료도 감지해 멈춥니다. 응답이 저장되기 전에 종료하면 서버에서 이미 처리한 요청도 재전송될 수 있습니다.
-
-`recoverInterrupted(audio:directory:)`는 녹음 전 표식이 있는 미완성 WAV를 별도 `audio-recovered.wav`로 복구합니다. 원본·기존 복구본을 덮어쓰지 않고, 디스크에 남은 완전한 PCM만 사용합니다. 이전 버전의 녹음 표식도 읽지만 이전 엔진의 전사 캐시는 새 결과로 재사용하지 않습니다.
-
-## CLI와 검증
+## CLI
 
 ```sh
-swift run doongdoong-transcribe recording.wav result \
-  /opt/homebrew/bin/codex /opt/homebrew/bin/ffmpeg \
-  "$HOME/Library/Application Support/Doongdoong/Alignment/venv/bin/python" \
-  "$HOME/Library/Application Support/Doongdoong/Alignment/models" ko
-swift test
-"$HOME/Library/Application Support/Doongdoong/Alignment/venv/bin/python" \
-  -m unittest discover -s Tests/Alignment
+swift run doongdoong-transcribe audio.wav ./result \
+  /opt/homebrew/bin/whisper-server /path/to/model.bin /path/to/vad.bin ko
 ```
 
-CLI는 실제 서버로 음성을 전송하며 `result/segments.json`을 저장합니다. 단위 테스트는 서버·모델 다운로드 없이 인증 RPC 제한, 정렬 검증, 정렬 실패 후 응답 재사용, 짧은 마지막 구간, 음성 변조 검출, 복구와 진행률을 검사합니다. Python 검사는 NumPy만 필요합니다.
+`result/transcript.json`과 `result/local-transcription/`에 결과와 재개 기록을 저장합니다. 원본 파일과 작업 폴더를 함께 보관하면 다른 앱에서도 이어 처리할 수 있습니다.
 
-이전 로컬 전사 구현은 태그 `0.1.2`에 보존되어 있습니다. 앱과 함께 복원하는 절차는 `doongdoong-ai/doongdoong` 저장소의 `docs/restore-whisper.ko.md`에 정리했습니다. 현재 0.2 계열은 설정·recognizer API가 달라 이전 버전과 소스 호환되지 않습니다.
+## 검증과 한계
+
+테스트는 녹음 중 증분 처리, 마지막 짧은 구간, 실패 후 재개, 음성 변경 검출, 언어별 캐시, 무음, 헤더 복구, 추론 직렬화, 취소 후 재시작을 확인합니다. 설치된 실제 엔진 검증은 `DD_WHISPER_SERVER`, `DD_WHISPER_MODEL`, `DD_WHISPER_VAD`, `DD_WHISPER_AUDIO`를 설정하고 `swift test --filter EngineTests/testInstalledEngineReusesModel`로 실행합니다.
+
+M1·8GB에서 Turbo 모델에 8초 음성을 두 번 요청하여 동일 PID·모델 로딩 1회를 확인했습니다. 전체 73분 강의의 실시간 처리·발열·배터리·품질 회귀 검증을 대신하는 결과는 아닙니다. 짧은 구간 경계의 단어 손실, VAD 오검출, Whisper의 반복·환각은 여전히 평가해야 합니다. 입력을 겹쳐 반복 전사하지 않으므로 실시간 자막 수정 기능은 제공하지 않습니다.
+
+이 패키지는 whisper.cpp의 Swift 프로세스 어댑터와 증분 전사 세션입니다. 음성 인식 모델을 자체 개발한 프로젝트는 아닙니다. 엔진 감독 프로세스는 소유 앱의 파이프가 닫히면 상주 엔진을 종료합니다. Swift 종료 정리가 실행되지 않는 강제 종료에도 적용됩니다. 정상 종료와 잠자기 준비에서는 진행 중 요청을 취소하고 `unload()`를 호출하세요. 잠자기·마이크 중지·이어하기 UI는 호출 앱의 책임입니다. 아직 디스크에 쓰이지 않은 음성은 복구할 수 없습니다.
+
+MIT 라이선스. 외부 엔진과 모델의 출처·라이선스는 [구성요소 안내](THIRD_PARTY.md)에 정리했습니다.
