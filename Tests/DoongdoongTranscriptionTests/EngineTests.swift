@@ -3,6 +3,38 @@ import XCTest
 @testable import DoongdoongTranscription
 
 final class EngineTests: XCTestCase, @unchecked Sendable {
+    func testOwnerPipeEOFStopsResidentWorkerWithoutSwiftCleanup() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("worker.pid")
+        let lifetime = Pipe(), process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = EngineLifetime.arguments(executable: URL(fileURLWithPath: "/bin/bash"),
+            arguments: ["--noprofile", "--norc", "-c", "echo $$ > \"$1\"; exec /bin/sleep 60", "fixture", marker.path])
+        process.standardInput = lifetime.fileHandleForReading
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run(); try lifetime.fileHandleForReading.close()
+        defer {
+            try? lifetime.fileHandleForWriting.close()
+            if process.isRunning { process.terminate(); process.waitUntilExit() }
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+        while !FileManager.default.fileExists(atPath: marker.path) {
+            guard ContinuousClock.now < deadline else { return XCTFail("Worker did not start") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let pid = try XCTUnwrap(Int32(String(contentsOf: marker, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        // An idle model must remain resident across supervisor read timeouts.
+        try await Task.sleep(for: .milliseconds(1200))
+        XCTAssertTrue(process.isRunning); XCTAssertEqual(kill(pid, 0), 0)
+        try lifetime.fileHandleForWriting.close() // exactly the EOF caused by owner death
+        while process.isRunning {
+            guard ContinuousClock.now < deadline else { return XCTFail("Orphan worker survived EOF") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertNotEqual(kill(pid, 0), 0)
+    }
     private func fake() throws -> (URL, WhisperConfiguration) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

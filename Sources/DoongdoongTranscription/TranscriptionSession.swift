@@ -25,6 +25,14 @@ public actor TranscriptionSession {
         self.audio = audio; self.directory = directory; self.configuration = configuration; self.recognizer = recognizer
     }
 
+    /// Call before opening the app-owned recorder, even when ASR is unavailable.
+    /// Recovery must not depend on the first inference/poll having run.
+    public static func prepareRecording(directory: URL) throws {
+        let root = directory.appendingPathComponent("local-transcription", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try Data().write(to: root.appendingPathComponent("recording-active"), options: .atomic)
+    }
+
     /// Poll while recording. Pass final=true only after the recorder closes WAV.
     /// Calls for the same session must not overlap. Different sessions may share
     /// one WhisperEngine; it queues inference and keeps a single model resident.
@@ -110,6 +118,10 @@ public actor TranscriptionSession {
     public static func recoverInterrupted(audio: URL, directory: URL) async throws -> URL? {
         let marker = directory.appendingPathComponent("local-transcription/recording-active")
         guard FileManager.default.fileExists(atPath: marker.path) else { return nil }
+        let lock = open(directory.appendingPathComponent("local-transcription/.lock").path, O_CREAT | O_RDWR, 0o600)
+        guard lock >= 0 else { throw TranscriptionError.checkpoint }
+        defer { flock(lock, LOCK_UN); close(lock) }
+        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw TranscriptionError.busy }
         let header = try PCMFile.header(audio, closed: false)
         guard !header.finalized, header.frames > 0 else { return nil }
         let output = directory.appendingPathComponent("audio-local-recovered.wav")

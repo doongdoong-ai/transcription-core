@@ -29,7 +29,7 @@ enum PCMFile {
                 let available = size - UInt64(payload)
                 let finalized = number(4, 4) + 8 == size && UInt64(length) <= available && length.isMultiple(of: 2)
                 if closed && !finalized { throw TranscriptionError.invalidAudio }
-                let bytes = closed ? UInt64(length) : available
+                let bytes = finalized ? UInt64(length) : available
                 let frames = Int64(bytes / 2)
                 guard frames <= maximumFrames else { throw TranscriptionError.invalidAudio }
                 return Header(offset: UInt64(payload), frames: frames, finalized: finalized)

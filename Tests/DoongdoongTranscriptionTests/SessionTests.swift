@@ -15,6 +15,51 @@ private actor Recognizer: SpeechRecognizer {
 }
 
 final class SessionTests: XCTestCase, @unchecked Sendable {
+    func testCrashBeforeFirstASRPollCanRecoverAndReusePCMCheckpoints() async throws {
+        let (root, audio, config) = try fixture(seconds: 4.25)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try TranscriptionSession.prepareRecording(directory: root)
+        let original = PCMFile.waveHeader(bytes: 0) + samples(4.25) + Data([17])
+        try original.write(to: audio)
+        let repair = try await TranscriptionSession.recoverInterrupted(audio: audio, directory: root)
+        let recovered = try XCTUnwrap(repair)
+        XCTAssertEqual(try PCMFile.header(recovered, closed: true).frames, 68000)
+        XCTAssertEqual(try Data(contentsOf: audio), original, "The original and incomplete last sample must survive unchanged")
+        let first = Recognizer(failAt: 2)
+        do { _ = try await TranscriptionSession(audio: recovered, directory: root, configuration: config, recognizer: first).processAvailable(final: true); XCTFail() } catch {}
+        let next = Recognizer()
+        let result = try await TranscriptionSession(audio: recovered, directory: root, configuration: config, recognizer: next).processAvailable(final: true)
+        let calls = await next.calls
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(result.last?.end, 4.25)
+        XCTAssertEqual(try Data(contentsOf: audio), original)
+    }
+
+    func testUnmarkedAudioIsNotRepairedAndExistingRecoveryIsNotReplaced() async throws {
+        let (root, audio, _) = try fixture(seconds: 1)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try (PCMFile.waveHeader(bytes: 0) + samples(1)).write(to: audio)
+        let unmarked = try await TranscriptionSession.recoverInterrupted(audio: audio, directory: root)
+        XCTAssertNil(unmarked)
+        try TranscriptionSession.prepareRecording(directory: root)
+        let result = try await TranscriptionSession.recoverInterrupted(audio: audio, directory: root)
+        let recovered = try XCTUnwrap(result)
+        let edited = Data("user content".utf8); try edited.write(to: recovered)
+        do { _ = try await TranscriptionSession.recoverInterrupted(audio: audio, directory: root); XCTFail() }
+        catch TranscriptionError.sourceChanged {}
+        XCTAssertEqual(try Data(contentsOf: recovered), edited)
+    }
+
+    func testFinalizedWAVDoesNotReadTrailingMetadataAsAudio() throws {
+        let (root, audio, _) = try fixture(seconds: 1)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var data = try Data(contentsOf: audio)
+        data.append(Data([76, 73, 83, 84, 4, 0, 0, 0, 65, 66, 67, 68]))
+        var length = UInt32(data.count - 8).littleEndian
+        withUnsafeBytes(of: &length) { data.replaceSubrange(4..<8, with: $0) }
+        try data.write(to: audio)
+        XCTAssertEqual(try PCMFile.header(audio, closed: false).frames, 16000)
+    }
     private actor Events {
         var values: [TranscriptionProgress] = []
         func append(_ value: TranscriptionProgress) { values.append(value) }
