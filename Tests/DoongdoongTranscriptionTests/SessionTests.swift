@@ -15,6 +15,29 @@ private actor Recognizer: SpeechRecognizer {
 }
 
 final class SessionTests: XCTestCase, @unchecked Sendable {
+    private actor Events {
+        var values: [TranscriptionProgress] = []
+        func append(_ value: TranscriptionProgress) { values.append(value) }
+    }
+    func testProgressCountsOnlyCommittedAudioAndRestoresCachedCoverage() async throws {
+        let (root, audio, config) = try fixture(seconds: 5)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = Events()
+        do {
+            _ = try await TranscriptionSession(audio: audio, directory: root, configuration: config, recognizer: Recognizer(failAt: 2))
+                .processAvailable(final: true) { await first.append($0) }
+            XCTFail("Expected failure")
+        } catch {}
+        let partial = await first.values
+        XCTAssertEqual(partial.map(\.processedSeconds), [0, 2])
+        let next = Events()
+        _ = try await TranscriptionSession(audio: audio, directory: root, configuration: config, recognizer: Recognizer())
+            .processAvailable(final: true) { await next.append($0) }
+        let resumed = await next.values
+        XCTAssertEqual(resumed.map(\.processedSeconds), [2, 4, 5])
+        XCTAssertEqual(resumed.map(\.completedChunks), [1, 2, 3])
+        XCTAssertEqual(resumed.last?.fraction, 1)
+    }
     func fixture(seconds: Double) throws -> (URL, URL, WhisperConfiguration) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

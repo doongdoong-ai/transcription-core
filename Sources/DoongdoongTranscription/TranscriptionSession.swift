@@ -28,7 +28,8 @@ public actor TranscriptionSession {
     /// Poll while recording. Pass final=true only after the recorder closes WAV.
     /// Calls for the same session must not overlap. Different sessions may share
     /// one WhisperEngine; it queues inference and keeps a single model resident.
-    @discardableResult public func processAvailable(final: Bool) async throws -> [SpeechSegment] {
+    @discardableResult public func processAvailable(final: Bool,
+        onProgress: (@Sendable (TranscriptionProgress) async -> Void)? = nil) async throws -> [SpeechSegment] {
         guard !busy else { throw TranscriptionError.busy }
         busy = true; defer { busy = false }
         try Task.checkCancellation()
@@ -57,6 +58,8 @@ public actor TranscriptionSession {
         let maximum = Int64(configuration.chunkSeconds) * PCMFile.sampleRate
         var start = checkpoint.chunks.last?.end ?? 0
         guard start <= header.frames else { throw TranscriptionError.sourceChanged }
+        await onProgress?(.init(processedSeconds: Double(start) / 16000,
+            totalSeconds: Double(header.frames) / 16000, completedChunks: checkpoint.chunks.count))
         while header.frames - start >= maximum || final && start < header.frames {
             try Task.checkCancellation()
             var end = min(start + maximum, header.frames)
@@ -79,6 +82,8 @@ public actor TranscriptionSession {
             checkpoint.chunks.append(Chunk(start: start, end: end, sha256: digest(pcm), segments: segments))
             try JSONEncoder().encode(checkpoint).write(to: cache, options: .atomic)
             state = checkpoint; start = end
+            await onProgress?(.init(processedSeconds: Double(start) / 16000,
+                totalSeconds: Double(header.frames) / 16000, completedChunks: checkpoint.chunks.count))
         }
         if final { try? FileManager.default.removeItem(at: marker) }
         return checkpoint.chunks.flatMap { chunk in
