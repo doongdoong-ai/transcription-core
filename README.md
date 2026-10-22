@@ -51,6 +51,6 @@ swift run -c release doongdoong-transcribe /path/lecture.wav /path/work ko
 
 결과는 작업 폴더의 `transcript.json`과 `local-transcription/`에 저장합니다. 언어 모델이 없으면 첫 실행에서 다운로드합니다. 일반 테스트는 모델을 다운로드하거나 음성을 재생하지 않습니다. 설치된 한국어 모델의 실제 전사·취소·재시도 검증은 `DD_APPLE_SPEECH_AUDIO=/path/sample.wav swift test --filter AppleSpeechTests/testInstalledAppleEngine`로 실행합니다.
 
-0.2.0은 기존 엔진 설정 API를 교체합니다. Whisper 실행 파일·GGML 모델·Silero VAD·localhost 서버·모델 설치 스크립트가 제거되었습니다. 기존 저장 음성은 새 엔진으로 다시 처리하며 예전 엔진 체크포인트와 섞지 않습니다. 복구 기준은 [이전 엔진 복구 지침](docs/restore-whisper.ko.md)에 남겨 두었습니다.
+0.3.0은 기존 엔진 설정 API를 교체합니다. Whisper 실행 파일·GGML 모델·Silero VAD·localhost 서버·모델 설치 스크립트가 제거되었습니다. 기존 저장 음성은 새 엔진으로 다시 처리하며 예전 엔진 체크포인트와 섞지 않습니다. 복구 기준은 [이전 엔진 복구 지침](docs/restore-whisper.ko.md)에 남겨 두었습니다.
 
 이 패키지는 Apple 음성 모델을 자체 개발하거나 재배포하지 않습니다. 패키지 코드는 MIT이며 시스템 프레임워크·모델에는 Apple의 조건이 적용됩니다. [외부 구성요소](THIRD_PARTY.md)를 확인하세요.
