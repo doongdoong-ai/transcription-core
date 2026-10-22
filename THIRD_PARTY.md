@@ -1,9 +1,9 @@
 # 외부 구성요소
 
-이 저장소의 Swift 세션·프로세스 관리 코드는 MIT입니다. PCM 읽기·쉼 탐지·복구의 일부는 같은 조직의 둥둥이 MIT 코드에서 분리·수정했으며 저작권 표기를 유지합니다. 외부 ASR 래퍼 코드를 가져오지 않았습니다.
+패키지 코드는 MIT입니다. 음성 인식 모델을 포함하거나 배포하지 않습니다.
 
-- [whisper.cpp](https://github.com/ggml-org/whisper.cpp): MIT. 별도로 설치한 `whisper-server` 실행 파일을 사용합니다.
-- [OpenAI Whisper](https://github.com/openai/whisper): 코드와 모델 가중치는 MIT. 기본 `large-v3-turbo` GGML 변환본은 `ggerganov/whisper.cpp`에서 별도 다운로드합니다.
-- [Silero VAD](https://github.com/snakers4/silero-vad): MIT. GGML 변환본은 `ggml-org/whisper-vad`에서 별도 다운로드합니다.
+- Apple Speech / AVFoundation / CoreMedia: macOS 시스템 프레임워크. SDK·OS 사용 조건 적용.
+- Apple 음성 인식 언어 모델: `AssetInventory`가 시스템 자산으로 관리하며 Apple의 조건 적용. 패키지의 MIT 대상이 아닙니다.
+- Foundation / CryptoKit: 시스템 프레임워크. 파일 처리·체크포인트 무결성 검증에 사용합니다.
 
-설치 스크립트에 모델별 SHA-256과 다운로드 원본을 기록합니다. 엔진 바이너리·모델 가중치·사용자 음성·인증 정보는 이 저장소에 포함하지 않습니다.
+0.1.2의 whisper.cpp·Whisper 모델·Silero VAD 설치와 라이선스 기록은 해당 Git 태그의 `THIRD_PARTY.md`와 `scripts/setup-models.sh`에서 확인할 수 있습니다. 0.2.0의 실행 의존성이 아닙니다.

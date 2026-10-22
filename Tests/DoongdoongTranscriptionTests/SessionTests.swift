@@ -5,8 +5,14 @@ import XCTest
 private actor Recognizer: SpeechRecognizer {
     var calls = 0
     var failAt: Int?
-    init(failAt: Int? = nil) { self.failAt = failAt }
-    func transcribe(wave: Data, configuration: WhisperConfiguration) async throws -> [SpeechSegment] {
+    var preparations = 0
+    let failPreparation: Bool
+    init(failAt: Int? = nil, failPreparation: Bool = false) { self.failAt = failAt; self.failPreparation = failPreparation }
+    func prepare(configuration: SpeechConfiguration, onProgress: (@Sendable (SpeechPreparation) async -> Void)?) async throws {
+        preparations += 1
+        if failPreparation { throw TranscriptionError.assetsUnavailable }
+    }
+    func transcribe(wave: Data, configuration: SpeechConfiguration) async throws -> [SpeechSegment] {
         calls += 1
         if calls == failAt { throw TranscriptionError.server("fixture") }
         let duration = Double(wave.count - 44) / 32000
@@ -15,6 +21,23 @@ private actor Recognizer: SpeechRecognizer {
 }
 
 final class SessionTests: XCTestCase, @unchecked Sendable {
+    func testMissingAssetsDoNotAdvanceCursorAndCompletedCacheNeedsNoModel() async throws {
+        let (root, audio, config) = try fixture(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let missing = Recognizer(failPreparation: true)
+        do {
+            _ = try await TranscriptionSession(audio: audio, directory: root, configuration: config, recognizer: missing).processAvailable(final: true)
+            XCTFail("Expected missing assets")
+        } catch TranscriptionError.assetsUnavailable {}
+        let calls = await missing.calls; XCTAssertEqual(calls, 0)
+        let working = Recognizer()
+        let result = try await TranscriptionSession(audio: audio, directory: root, configuration: config, recognizer: working).processAvailable(final: true)
+        let unavailable = Recognizer(failPreparation: true)
+        let cached = try await TranscriptionSession(audio: audio, directory: root, configuration: config, recognizer: unavailable).processAvailable(final: true)
+        XCTAssertEqual(result, cached)
+        let prepares = await unavailable.preparations; XCTAssertEqual(prepares, 0)
+    }
+
     func testCrashBeforeFirstASRPollCanRecoverAndReusePCMCheckpoints() async throws {
         let (root, audio, config) = try fixture(seconds: 4.25)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -83,13 +106,12 @@ final class SessionTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(resumed.map(\.completedChunks), [1, 2, 3])
         XCTAssertEqual(resumed.last?.fraction, 1)
     }
-    func fixture(seconds: Double) throws -> (URL, URL, WhisperConfiguration) {
+    func fixture(seconds: Double) throws -> (URL, URL, SpeechConfiguration) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let model = root.appendingPathComponent("model.bin"); try Data([1]).write(to: model)
         let audio = root.appendingPathComponent("audio.wav")
         try PCMFile.wave(samples(seconds)).write(to: audio)
-        return (root, audio, WhisperConfiguration(executable: URL(fileURLWithPath: "/usr/bin/true"), model: model, vadModel: model, chunkSeconds: 2))
+        return (root, audio, SpeechConfiguration(chunkSeconds: 2))
     }
     func samples(_ seconds: Double) -> Data {
         var result = Data()
@@ -154,7 +176,7 @@ final class SessionTests: XCTestCase, @unchecked Sendable {
         defer { try? FileManager.default.removeItem(at: root) }
         let backend = Recognizer()
         _ = try await TranscriptionSession(audio: audio, directory: root, configuration: config, recognizer: backend).processAvailable(final: true)
-        let other = WhisperConfiguration(executable: config.executable, model: config.model, vadModel: config.vadModel, language: "en", chunkSeconds: 2)
+        let other = SpeechConfiguration(language: "en", chunkSeconds: 2)
         _ = try await TranscriptionSession(audio: audio, directory: root, configuration: other, recognizer: backend).processAvailable(final: true)
         let calls = await backend.calls; XCTAssertEqual(calls, 2)
     }

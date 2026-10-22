@@ -1,9 +1,9 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "DoongdoongTranscription",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("26.0")],
     products: [
         .library(name: "DoongdoongTranscription", targets: ["DoongdoongTranscription"]),
         .executable(name: "doongdoong-transcribe", targets: ["TranscribeCLI"])

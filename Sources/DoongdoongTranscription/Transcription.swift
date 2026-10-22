@@ -11,59 +11,71 @@ public struct SpeechSegment: Codable, Equatable, Sendable {
     }
 }
 
-public struct WhisperConfiguration: Codable, Equatable, Sendable {
-    public let executable: URL
-    public let model: URL
-    public let vadModel: URL
+/// Locale and checkpoint policy. Model assets belong to macOS, not the app.
+public struct SpeechConfiguration: Codable, Equatable, Sendable {
     public let language: String
     public let chunkSeconds: Int
 
-    public init(executable: URL, model: URL, vadModel: URL, language: String = "ko", chunkSeconds: Int = 60) {
-        self.executable = executable; self.model = model; self.vadModel = vadModel
+    public init(language: String = "ko", chunkSeconds: Int = 60) {
         self.language = language; self.chunkSeconds = chunkSeconds
     }
 
-    func validate() throws {
-        guard (1...300).contains(chunkSeconds), !language.isEmpty,
-              language.utf8.count <= 16, language.allSatisfy({ $0.isASCII && ($0.isLetter || $0 == "-") }),
-              executable.isFileURL, model.isFileURL, vadModel.isFileURL,
-              FileManager.default.isExecutableFile(atPath: executable.path),
-              FileManager.default.isReadableFile(atPath: model.path),
-              FileManager.default.isReadableFile(atPath: vadModel.path) else { throw TranscriptionError.configuration }
+    public var localeIdentifier: String {
+        ["ko": "ko-KR", "en": "en-US", "ja": "ja-JP"][language] ?? language
     }
 
-    // File identity includes replacement and modification, without rereading GB of
-    // weights for each poll. Do not modify a model in place while a session is active.
+    func validate() throws {
+        guard (1...300).contains(chunkSeconds), !language.isEmpty, language != "auto",
+              language.utf8.count <= 64,
+              language.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else {
+            throw TranscriptionError.configuration
+        }
+    }
+
     func identity() throws -> String {
         try validate()
-        // JSON field ordering is not stable across processes; use sorted keys.
+        // Never reuse another engine's checkpoints. Pin segmentation policy too.
+        // Apple's model revision is opaque; OS upgrades intentionally invalidate ASR caches.
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        var value = "whisper-server-v1|" + String(decoding: try encoder.encode(self), as: UTF8.self)
-        for url in [executable, model, vadModel] {
-            let a = try FileManager.default.attributesOfItem(atPath: url.resolvingSymlinksInPath().path)
-            value += "|\(a[.size] ?? 0)|\(a[.modificationDate] as? Date ?? .distantPast)|\(a[.systemFileNumber] ?? 0)"
-        }
-        return digest(Data(value.utf8))
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        return digest(Data("apple-speech-v1-phrases1|\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)|".utf8) + (try encoder.encode(self)))
     }
 }
 
+public enum SpeechAvailability: Equatable, Sendable {
+    case ready, downloadRequired, downloading, unsupportedLanguage, unavailable
+}
+
+public enum SpeechPreparation: Equatable, Sendable {
+    case checking, downloading(fraction: Double?)
+}
+
 public enum TranscriptionError: LocalizedError, Sendable {
-    case configuration, invalidAudio, invalidResponse, sourceChanged, checkpoint, busy, server(String)
+    case configuration, invalidAudio, invalidResponse, sourceChanged, checkpoint, busy, unavailable, unsupportedLanguage, assetsUnavailable, timedOut, server(String)
     public var errorDescription: String? {
         switch self {
-        case .configuration: "로컬 음성 인식 엔진과 모델 파일을 확인해 주세요."
+        case .configuration: "음성 인식 언어와 구간 길이를 확인해 주세요. 자동 언어 감지는 지원하지 않습니다."
         case .invalidAudio: "16 kHz, 모노, 16비트 PCM WAV 파일이 필요합니다."
         case .invalidResponse: "음성 인식 결과의 문장 또는 재생 위치를 확인할 수 없습니다."
         case .sourceChanged: "처리 중인 녹음의 기존 내용이 변경되었습니다. 원본과 전사 기록을 확인해 주세요."
         case .checkpoint: "저장된 전사 기록을 읽지 못했습니다. 원본 음성은 변경하지 않았습니다."
         case .busy: "같은 녹음의 처리가 이미 진행 중입니다."
+        case .unavailable: "이 Mac에서는 Apple 음성 인식을 사용할 수 없습니다. macOS 26 이상과 지원 기기가 필요합니다."
+        case .unsupportedLanguage: "선택한 언어는 이 Mac의 Apple 음성 인식에서 지원하지 않습니다."
+        case .assetsUnavailable: "음성 인식 언어 모델을 준비하지 못했습니다. 인터넷 연결과 저장 공간을 확인하고 다시 시도해 주세요."
+        case .timedOut: "음성 인식 응답 시간이 초과되었습니다. 저장된 구간부터 다시 시도할 수 있습니다."
         case .server(let message): "로컬 음성 인식 엔진: \(message)"
         }
     }
 }
 
 public protocol SpeechRecognizer: Sendable {
-    func transcribe(wave: Data, configuration: WhisperConfiguration) async throws -> [SpeechSegment]
+    func prepare(configuration: SpeechConfiguration, onProgress: (@Sendable (SpeechPreparation) async -> Void)?) async throws
+    func transcribe(wave: Data, configuration: SpeechConfiguration) async throws -> [SpeechSegment]
+}
+
+public extension SpeechRecognizer {
+    func prepare(configuration: SpeechConfiguration, onProgress: (@Sendable (SpeechPreparation) async -> Void)?) async throws {}
 }
 
 func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
