@@ -1,85 +1,56 @@
-# Doongdoong Transcription
+# 둥둥이 전사 코어
 
-**모델을 메모리에 유지하고, 녹음 중 새로 쌓인 음성을 순차 전사하는 Swift 패키지.**
+**macOS의 Apple Speech로 음성을 텍스트와 재생 위치로 바꾸는 독립 Swift 패키지입니다.** 녹음 중 저장되는 WAV와 녹음이 끝난 파일에 같은 증분 처리 경로를 사용합니다. Codex·로그인·앱 UI에 의존하지 않습니다.
 
-둥둥이에서 전사만 분리한 코어입니다. 입력은 녹음 중이거나 완성된 WAV, 출력은 원문과 문장별 타임스탬프입니다. 교정·제목·요약, UI, 계정 로그인은 포함하지 않습니다. Codex·Claude·API 키·구독 없이 실행합니다.
+macOS 26 이상, Swift 6.2 / macOS 26 SDK가 필요합니다. Apple Silicon M1에서 검증했습니다. 지원 기기와 언어는 `AppleSpeechEngine.availability`로 확인합니다. 음성은 `SpeechAnalyzer`와 `SpeechTranscriber`가 기기에서 처리하고, 언어 모델은 macOS의 `AssetInventory`가 설치·관리합니다. 첫 사용에 모델 다운로드가 필요할 수 있습니다.
 
-## 처리 방식
-
-```text
-계속 저장되는 WAV
-    → 약 60초의 미처리 구간 (끝부분의 쉼을 우선)
-    → 메모리에 유지한 Whisper + 음성 감지
-    → 원문 · 시작/종료 시간 · 처리 기록
-녹음 종료 → 마지막 남은 구간 → 하나의 전사문
-```
-
-`WhisperEngine` 하나를 여러 세션이 공유합니다. 첫 요청에서 `whisper-server`를 실행하고 모델을 올린 뒤 다음 요청부터 재사용합니다. HTTP는 Mac 내부 `127.0.0.1`에서만 사용하며 클라우드에 음성을 보내지 않습니다. 작업은 FIFO로 직렬 처리하므로 모델 여러 개가 동시에 메모리를 차지하지 않습니다.
-
-`TranscriptionSession`은 이미 처리한 PCM을 다시 인식하지 않습니다. 완료한 구간을 원자적으로 저장하고 재시도 시 PCM SHA-256과 설정을 검증합니다. 언어·모델 파일의 식별 정보·분할 설정이 바뀌면 별도 캐시를 사용합니다. 같은 녹음의 중복 실행은 파일 잠금으로 막습니다. 모델 파일은 실행 중 수정하지 마세요.
-
-Silero VAD로 발화 구간을 감지하며 디지털 무음은 디코더에 전달하지 않습니다. 녹음의 끝이 짧아도 마지막 구간을 버리지 않습니다. 반환 시간은 Whisper의 세그먼트 타임스탬프이며 단어 단위 강제 정렬이나 정확도 보증은 아닙니다.
-
-## 준비
-
-macOS 14 이상, Swift 6, whisper.cpp 1.9.5에서 검증했습니다. 현재 패키지는 macOS용이며 Linux·Docker 지원은 아직 없습니다. 기본 모델은 `large-v3-turbo` FP16, VAD는 Silero 6.2.0입니다.
-
-```sh
-brew install whisper.cpp
-./scripts/setup-models.sh
-swift test
-```
-
-모델은 처음 한 번 별도로 받으며 저장소와 패키지에 포함하지 않습니다. 설치 스크립트는 SHA-256을 확인하고 기존 모델을 재사용합니다. 설치 후 전사에는 인터넷이 필요 없습니다.
-
-## Swift에서 사용하기
-
-Swift Package Manager 의존성에 `doongdoong-ai/transcription-core`의 `0.1.2`를 추가하고 `DoongdoongTranscription` 제품을 연결합니다.
+## 파일을 전사하기
 
 ```swift
 import DoongdoongTranscription
 
-let engine = WhisperEngine() // 앱에서 공유: 녹음마다 만들지 않습니다.
-// 첫 ASR 호출 전 강제 종료도 복구할 수 있도록, 녹음기를 열기 전에 호출합니다.
-try TranscriptionSession.prepareRecording(directory: workDirectory)
-let configuration = WhisperConfiguration(
-    executable: serverURL, model: modelURL, vadModel: vadURL,
-    language: "ko", chunkSeconds: 60
-)
+let engine = AppleSpeechEngine()
+let configuration = SpeechConfiguration(language: "ko", chunkSeconds: 60)
 let session = TranscriptionSession(
-    audio: recordingURL, directory: workDirectory,
-    configuration: configuration, recognizer: engine
-)
-
-// WAV를 계속 기록하는 동안 주기적으로, 이전 호출이 끝난 뒤 호출합니다.
-let partial = try await session.processAvailable(final: false)
-// 녹음기를 닫고 진행 중인 호출을 기다린 뒤:
-let complete = try await session.processAvailable(final: true)
-// 더 이상 사용할 때가 없거나 앱을 종료할 때:
+    audio: audioURL, directory: workDirectory,
+    configuration: configuration, recognizer: engine)
+let segments = try await session.processAvailable(final: true) { progress in
+    // preparation: 언어 모델 확인·다운로드, 그 외: 완료된 음성 길이
+    print(progress.processedSeconds, progress.totalSeconds, progress.preparation as Any)
+}
 await engine.unload()
 ```
 
-입력은 **16 kHz·모노·16비트 little-endian PCM WAV**, 최대 4시간입니다. 입력 형식 변환과 마이크 녹음은 호출 앱이 맡습니다. 세션 호출은 겹치지 않아야 합니다. 오류가 나도 녹음기를 중단하지 말고, 같은 세션이나 같은 작업 폴더로 재시도하세요.
+입력은 16 kHz·모노·16비트 PCM WAV입니다. 출력 `SpeechSegment`는 `start`, `end`, `text`를 갖습니다. 시각은 원본 음성 기준 초 단위입니다. Apple이 반환한 시간 속성 텍스트를 문장부호·길이·시간 기준으로 묶고, 시간 속성이 빠지면 Apple의 결과 구간을 그대로 사용합니다. 임의로 단어별 시간을 추정하지 않습니다.
 
-정상 녹음 종료 시 진행 중인 추론을 취소하지 않으면 모델과 처리 결과를 그대로 재사용할 수 있습니다. 작업 자체를 취소하면 실행 중인 엔진 프로세스를 종료하고 다음 요청에서 다시 로딩합니다. 여러 세션을 공유할 때 대기 중인 취소는 자신의 차례에 반영됩니다.
+`language`는 `ko`/`ko-KR`, `en`/`en-US`, `ja`/`ja-JP` 같은 명시적 언어입니다. 실제 지원 언어는 시스템에서 확인합니다. 자동 감지는 지원하지 않습니다.
 
-앱이 비정상 종료되어 WAV 헤더가 미완성이라면 `TranscriptionSession.recoverInterrupted(audio:directory:)`로 별도 `audio-local-recovered.wav`를 만들 수 있습니다. `prepareRecording`으로 표식을 남긴 파일만 복구하며 원본은 덮어쓰지 않습니다. 복구도 전사와 같은 파일 잠금을 사용합니다. 디스크에 남은 완전한 PCM 샘플만 포함하고, 기존 복구 파일의 내용이 다르면 덮어쓰지 않습니다. 복구 후에도 같은 PCM의 체크포인트를 재사용합니다.
+## 녹음 중 처리와 복구
 
-## CLI
+1. 녹음기를 열기 전에 `TranscriptionSession.prepareRecording(directory:)`를 호출합니다.
+2. WAV가 자라는 동안 같은 세션의 `processAvailable(final: false)`를 주기적으로 호출합니다.
+3. 녹음기를 닫은 뒤 `final: true`로 남은 구간을 처리합니다.
+4. 중단된 WAV는 `recoverInterrupted(audio:directory:)`로 원본과 별도 파일에 복구합니다.
+
+기본 구간은 최대 60초이며 마지막 5초의 쉼을 우선 경계로 택합니다. 겹친 음성을 반복 처리하지 않고, 짧은 마지막 구간도 남기지 않습니다. 디지털 무음은 인식기에 보내지 않으며, 작은 발화는 진폭 기준으로 제거하지 않습니다.
+
+완료된 구간만 PCM SHA-256과 함께 원자적으로 저장합니다. 실패·취소는 현재 구간의 커서를 전진시키지 않습니다. 중복 작업은 파일 잠금으로 막으며, 소스가 바뀌면 기존 결과를 재사용하지 않습니다. 체크포인트는 엔진·분할 정책·언어·OS 버전으로 구분합니다. Apple 모델의 독립 revision은 API에서 확보하지 못하므로 같은 OS에서의 모델 업데이트까지 감지한다고 보장하지 않습니다.
+
+하나의 `AppleSpeechEngine`을 여러 세션이 공유할 수 있습니다. FIFO gate가 준비와 추론을 직렬화하며 대기 중 취소도 처리합니다. 각 분석은 180초 제한을 두고 취소 시 `cancelAndFinishNow()`로 정리합니다. `.lingering` 정책으로 구간 사이 모델 재사용을 시스템에 맡깁니다. `unload()`는 이 엔진이 예약한 언어만 해제하며, 모델 파일을 삭제하거나 시스템 메모리의 즉시 반환을 보장하지 않습니다.
+
+## 언어 모델 준비
+
+`availability(configuration:)`는 준비 완료·다운로드 필요·다운로드 중·미지원 언어·미지원 기기를 구분합니다. `prepare(configuration:onProgress:)`로 사전 준비할 수 있으며, `TranscriptionSession`도 첫 미처리 발화 전에 준비합니다. 다운로드 오류가 나면 작업은 체크포인트를 보존하고 재시도할 수 있습니다. 음성 전사에는 계정이나 외부 음성 API가 필요 없습니다. 텍스트 교정·요약은 호출 앱의 책임입니다.
+
+## CLI와 검증
 
 ```sh
-swift run doongdoong-transcribe audio.wav ./result \
-  /opt/homebrew/bin/whisper-server /path/to/model.bin /path/to/vad.bin ko
+swift test
+swift run -c release doongdoong-transcribe /path/lecture.wav /path/work ko
 ```
 
-`result/transcript.json`과 `result/local-transcription/`에 결과와 재개 기록을 저장합니다. 원본 파일과 작업 폴더를 함께 보관하면 다른 앱에서도 이어 처리할 수 있습니다.
+결과는 작업 폴더의 `transcript.json`과 `local-transcription/`에 저장합니다. 언어 모델이 없으면 첫 실행에서 다운로드합니다. 일반 테스트는 모델을 다운로드하거나 음성을 재생하지 않습니다. 설치된 한국어 모델의 실제 전사·취소·재시도 검증은 `DD_APPLE_SPEECH_AUDIO=/path/sample.wav swift test --filter AppleSpeechTests/testInstalledAppleEngine`로 실행합니다.
 
-## 검증과 한계
+0.2.0은 기존 엔진 설정 API를 교체합니다. Whisper 실행 파일·GGML 모델·Silero VAD·localhost 서버·모델 설치 스크립트가 제거되었습니다. 기존 저장 음성은 새 엔진으로 다시 처리하며 예전 엔진 체크포인트와 섞지 않습니다. 복구 기준은 [이전 엔진 복구 지침](docs/restore-whisper.ko.md)에 남겨 두었습니다.
 
-테스트는 녹음 중 증분 처리, 마지막 짧은 구간, 실패 후 재개, 음성 변경 검출, 언어별 캐시, 무음, 헤더 복구, 추론 직렬화, 취소 후 재시작을 확인합니다. 설치된 실제 엔진 검증은 `DD_WHISPER_SERVER`, `DD_WHISPER_MODEL`, `DD_WHISPER_VAD`, `DD_WHISPER_AUDIO`를 설정하고 `swift test --filter EngineTests/testInstalledEngineReusesModel`로 실행합니다.
-
-M1·8GB에서 Turbo 모델에 8초 음성을 두 번 요청하여 동일 PID·모델 로딩 1회를 확인했습니다. 전체 73분 강의의 실시간 처리·발열·배터리·품질 회귀 검증을 대신하는 결과는 아닙니다. 짧은 구간 경계의 단어 손실, VAD 오검출, Whisper의 반복·환각은 여전히 평가해야 합니다. 입력을 겹쳐 반복 전사하지 않으므로 실시간 자막 수정 기능은 제공하지 않습니다.
-
-이 패키지는 whisper.cpp의 Swift 프로세스 어댑터와 증분 전사 세션입니다. 음성 인식 모델을 자체 개발한 프로젝트는 아닙니다. 엔진 감독 프로세스는 소유 앱의 파이프가 닫히면 상주 엔진을 종료합니다. Swift 종료 정리가 실행되지 않는 강제 종료에도 적용됩니다. 정상 종료와 잠자기 준비에서는 진행 중 요청을 취소하고 `unload()`를 호출하세요. 잠자기·마이크 중지·이어하기 UI는 호출 앱의 책임입니다. 아직 디스크에 쓰이지 않은 음성은 복구할 수 없습니다.
-
-MIT 라이선스. 외부 엔진과 모델의 출처·라이선스는 [구성요소 안내](THIRD_PARTY.md)에 정리했습니다.
+이 패키지는 Apple 음성 모델을 자체 개발하거나 재배포하지 않습니다. 패키지 코드는 MIT이며 시스템 프레임워크·모델에는 Apple의 조건이 적용됩니다. [외부 구성요소](THIRD_PARTY.md)를 확인하세요.

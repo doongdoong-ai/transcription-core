@@ -16,12 +16,12 @@ public actor TranscriptionSession {
         var chunks: [Chunk]
     }
     private let audio: URL, directory: URL
-    private let configuration: WhisperConfiguration
+    private let configuration: SpeechConfiguration
     private let recognizer: any SpeechRecognizer
     private var state: Checkpoint?
     private var busy = false
 
-    public init(audio: URL, directory: URL, configuration: WhisperConfiguration, recognizer: any SpeechRecognizer) {
+    public init(audio: URL, directory: URL, configuration: SpeechConfiguration, recognizer: any SpeechRecognizer) {
         self.audio = audio; self.directory = directory; self.configuration = configuration; self.recognizer = recognizer
     }
 
@@ -35,7 +35,7 @@ public actor TranscriptionSession {
 
     /// Poll while recording. Pass final=true only after the recorder closes WAV.
     /// Calls for the same session must not overlap. Different sessions may share
-    /// one WhisperEngine; it queues inference and keeps a single model resident.
+    /// one AppleSpeechEngine; it serializes analysis through the system service.
     @discardableResult public func processAvailable(final: Bool,
         onProgress: (@Sendable (TranscriptionProgress) async -> Void)? = nil) async throws -> [SpeechSegment] {
         guard !busy else { throw TranscriptionError.busy }
@@ -65,6 +65,7 @@ public actor TranscriptionSession {
         if final { try verify(checkpoint, header: header) }
         let maximum = Int64(configuration.chunkSeconds) * PCMFile.sampleRate
         var start = checkpoint.chunks.last?.end ?? 0
+        var prepared = false
         guard start <= header.frames else { throw TranscriptionError.sourceChanged }
         await onProgress?(.init(processedSeconds: Double(start) / 16000,
             totalSeconds: Double(header.frames) / 16000, completedChunks: checkpoint.chunks.count))
@@ -79,9 +80,17 @@ public actor TranscriptionSession {
             let pcm = try PCMFile.samples(audio, header: header, start: start, end: end)
             let segments: [SpeechSegment]
             // Digital silence never reaches the decoder. Quiet real speech still
-            // goes through Silero VAD; do not use a coarse amplitude cutoff.
+            // still reaches Apple Speech; do not use a coarse amplitude cutoff.
             if pcm.allSatisfy({ $0 == 0 }) { segments = [] }
             else {
+                if !prepared {
+                    let covered = Double(start) / 16000, count = checkpoint.chunks.count
+                    try await recognizer.prepare(configuration: configuration) { value in
+                        await onProgress?(.init(processedSeconds: covered, totalSeconds: Double(header.frames) / 16000,
+                            completedChunks: count, preparation: value))
+                    }
+                    prepared = true
+                }
                 let raw = try await recognizer.transcribe(wave: PCMFile.wave(pcm), configuration: configuration)
                 segments = try validated(raw, duration: Double(end - start) / 16000)
             }
